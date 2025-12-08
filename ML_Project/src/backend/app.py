@@ -2,9 +2,11 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import joblib
 import numpy as np
+import traceback
 
 app = Flask(__name__)
 
+# ✅ Proper CORS Configuration
 CORS(app, resources={
     r"/predict": {
         "origins": [
@@ -18,65 +20,82 @@ CORS(app, resources={
     }
 })
 
-model_data = joblib.load("model.pkl")
+# ✅ Load Model Safely
+try:
+    model_data = joblib.load("model.pkl")
 
-if isinstance(model_data, tuple) and len(model_data) == 4:
-    model, label_map, mood_map, social_map = model_data
-    print("Model, label_map, mood_map, and social_map loaded.")
-else:
-    raise ValueError("Invalid model.pkl format")
+    if isinstance(model_data, tuple) and len(model_data) == 4:
+        model, label_map, mood_map, social_map = model_data
+        print("Model and mappings loaded successfully.")
+    else:
+        raise ValueError("Invalid model.pkl format. Expected 4 items.")
 
+except Exception as e:
+    print("Model loading failed:", str(e))
+    model = None
+
+# ✅ Stress Messages
 message_map = {
-  "Low Stress": (
-    "You’re radiating a calm, lovely energy today. Let that gentle glow guide you through your day.\n\n"
-    "Keep smiling, keep breathing slow, and if you’d like, check your wellness to-do list for extra balance."
-  ),
-  "Medium Stress": (
-    "I see how much effort you're putting in. Even on days that feel uncertain, you still carry yourself with grace.\n\n"
-    "You don’t need to fix everything right now. Be kind to yourself. When you're ready, your to-do list is waiting with gentle reminders."
-  ),
-  "High Stress": (
-    "It must feel heavy right now. You’ve been holding a lot inside — take this moment to simply breathe.\n\n"
-    "You are not behind, not failing, and not alone. You are worthy of rest and care. When you feel ready, your to-do list has soft, supportive steps to help you."
-  )
+    "Low Stress": (
+        "You’re calm and balanced today. Maintain this steady energy and stay hydrated."
+    ),
+    "Medium Stress": (
+        "You’re managing well, but don’t ignore fatigue. Small breaks will help."
+    ),
+    "High Stress": (
+        "Your stress level is high. Slow down, breathe deeply, and seek rest or support."
+    )
 }
 
+# ✅ Prediction API
 @app.route('/predict', methods=['POST'])
 def predict():
     try:
+        if not model:
+            return jsonify({"error": "Model not loaded"}), 500
+
         data = request.get_json()
         print("Received data:", data)
 
-        if not data:
-            return jsonify({"error": "No data provided"}), 400
+        # ✅ Input Validation
+        required_fields = ["sleep", "work", "mood", "social"]
+        for field in required_fields:
+            if field not in data:
+                return jsonify({"error": f"Missing field: {field}"}), 400
 
-        sleep = float(data.get('sleep', 0))
-        work = float(data.get('work', 0))
-        mood = mood_map.get(data.get('mood', ""), 0)
-        social = social_map.get(data.get('social', ""), 0)
-
-        print(f"Inputs — Sleep: {sleep}, Work: {work}, Mood: {mood}, Social: {social}")
+        sleep = float(data["sleep"])
+        work = float(data["work"])
+        mood = mood_map.get(data["mood"], 0)
+        social = social_map.get(data["social"], 0)
 
         input_data = np.array([[sleep, work, mood, social]])
+
         prediction = model.predict(input_data)[0]
         label = label_map.get(prediction, "Unknown")
-        message = message_map.get(label, "No message available.")
-
-        print(f"Prediction: {prediction} => Label: {label} | Message: {message}")
+        message = message_map.get(label, "No suggestion available.")
 
         return jsonify({
-            "label": label,
+            "status": "success",
+            "stress_level": label,
             "message": message
         })
 
     except Exception as e:
-        print(f"Error in prediction: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        print("Prediction Error:", traceback.format_exc())
+        return jsonify({
+            "status": "error",
+            "message": "Internal Server Error"
+        }), 500
 
+# ✅ Health Check API
 @app.route('/health', methods=['GET'])
 def health_check():
-    return jsonify({"status": "healthy", "message": "Flask server is running!"})
+    return jsonify({
+        "status": "healthy",
+        "message": "Flask server is running properly."
+    })
 
+# ✅ App Runner
 if __name__ == '__main__':
-    print("Starting Flask app at http://localhost:5001")
-    app.run(debug=True, port=5001, host='0.0.0.0')
+    print("Flask server running at http://localhost:5001")
+    app.run(debug=True, host='0.0.0.0', port=5001)

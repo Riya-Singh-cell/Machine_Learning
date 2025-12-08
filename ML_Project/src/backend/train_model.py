@@ -1,17 +1,164 @@
-import joblib
+import pandas as pd
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.pipeline import Pipeline
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import (
-    accuracy_score, f1_score, roc_auc_score,
-    classification_report, roc_curve
-)
+import joblib
 import matplotlib.pyplot as plt
 
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    roc_auc_score,
+    confusion_matrix,
+    roc_curve
+)
+
 # ================================
-# 1️⃣ MAPS
+# 1) LOAD DATA
 # ================================
+df = pd.read_csv("stress_data.csv")
+
+# ================================
+# 2) FEATURE ENGINEERING
+# ================================
+df["work_sleep_ratio"] = df["work"] / df["sleep"]
+df["stress_load_index"] = df["work"] * (-df["mood"])
+df["social_buffer"] = df["social"] * df["mood"]
+
+print("\nFeature Engineering Completed")
+print(df.head())
+
+# ================================
+# 3) SPLIT FEATURES & TARGET
+# ================================
+X = df.drop("stress", axis=1)
+y = df["stress"]
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
+
+# ================================
+# 4) MODEL 1: LOGISTIC REGRESSION
+# ================================
+lr_pipeline = Pipeline([
+    ("scaler", StandardScaler()),
+    ("lr", LogisticRegression(max_iter=1000, multi_class="auto"))
+])
+
+lr_pipeline.fit(X_train, y_train)
+lr_pred = lr_pipeline.predict(X_test)
+lr_prob = lr_pipeline.predict_proba(X_test)
+
+lr_acc = accuracy_score(y_test, lr_pred)
+lr_f1 = f1_score(y_test, lr_pred, average="weighted")
+lr_auc = roc_auc_score(y_test, lr_prob, multi_class="ovo")
+
+# ================================
+# 5) MODEL 2: RANDOM FOREST WITH HYPERPARAMETER TUNING
+# ================================
+rf_pipeline = Pipeline([
+    ("scaler", StandardScaler()),
+    ("rf", RandomForestClassifier(random_state=42))
+])
+
+param_grid = {
+    "rf__n_estimators": [100, 200, 300],
+    "rf__max_depth": [5, 10, 20, None],
+    "rf__min_samples_split": [2, 5, 10],
+    "rf__min_samples_leaf": [1, 2, 4]
+}
+
+grid_search = GridSearchCV(
+    estimator=rf_pipeline,
+    param_grid=param_grid,
+    cv=5,
+    scoring="f1_weighted",
+    n_jobs=-1,
+    verbose=2
+)
+
+print("\nStarting Hyperparameter Tuning...")
+grid_search.fit(X_train, y_train)
+
+rf_best_pipeline = grid_search.best_estimator_
+
+print("\nBest Parameters Found:")
+print(grid_search.best_params_)
+
+rf_pred = rf_best_pipeline.predict(X_test)
+rf_prob = rf_best_pipeline.predict_proba(X_test)
+
+rf_acc = accuracy_score(y_test, rf_pred)
+rf_f1 = f1_score(y_test, rf_pred, average="weighted")
+rf_auc = roc_auc_score(y_test, rf_prob, multi_class="ovo")
+
+# ================================
+# 6) MODEL COMPARISON
+# ================================
+print("\nMODEL COMPARISON")
+print("-----------------------------------------------")
+print(f"Logistic Regression -> Acc: {lr_acc:.4f}, F1: {lr_f1:.4f}, AUC: {lr_auc:.4f}")
+print(f"Tuned Random Forest -> Acc: {rf_acc:.4f}, F1: {rf_f1:.4f}, AUC: {rf_auc:.4f}")
+print("-----------------------------------------------")
+
+# ================================
+# 7) SELECT BEST MODEL
+# ================================
+best_model = rf_best_pipeline if rf_f1 > lr_f1 else lr_pipeline
+
+print(
+    "\nBest Model Selected:",
+    type(best_model.named_steps[list(best_model.named_steps.keys())[-1]]).__name__
+)
+
+# ================================
+# 8) CONFUSION MATRIX (BEST MODEL)
+# ================================
+cm = confusion_matrix(y_test, rf_pred)
+
+plt.figure()
+plt.imshow(cm)
+plt.title("Confusion Matrix")
+plt.xlabel("Predicted Label")
+plt.ylabel("True Label")
+plt.colorbar()
+plt.show()
+
+# ================================
+# 9) ROC CURVE (MULTI-CLASS)
+# ================================
+fpr = dict()
+tpr = dict()
+
+n_classes = len(np.unique(y_test))
+
+for i in range(n_classes):
+    fpr[i], tpr[i], _ = roc_curve((y_test == i).astype(int), rf_prob[:, i])
+
+plt.figure()
+for i in range(n_classes):
+    plt.plot(fpr[i], tpr[i], label=f"Class {i}")
+
+plt.plot([0, 1], [0, 1], linestyle="--")
+plt.xlabel("False Positive Rate")
+plt.ylabel("True Positive Rate")
+plt.title("ROC Curve - Stress Classification")
+plt.legend()
+plt.show()
+
+# ================================
+# 10) MAPS FOR FLASK
+# ================================
+label_map = {
+    0: "Low Stress",
+    1: "Medium Stress",
+    2: "High Stress"
+}
+
 mood_map = {
     "Excellent": 2,
     "Good": 1,
@@ -27,126 +174,12 @@ social_map = {
     "High": 3
 }
 
-label_map = {
-    0: "Low Stress",
-    1: "Medium Stress",
-    2: "High Stress"
-}
-
 # ================================
-# 2️⃣ DATA
+# 11) SAVE FINAL TUNED MODEL
 # ================================
-X = np.array([
-    [7, 6, mood_map["Excellent"], social_map["High"]],
-    [5, 10, mood_map["Poor"], social_map["Alone"]],
-    [6, 8, mood_map["Okay"], social_map["Medium"]],
-    [8, 5, mood_map["Good"], social_map["High"]],
-    [4, 11, mood_map["Terrible"], social_map["Low"]],
-    [4, 4, mood_map["Okay"], social_map["High"]],
-    [5, 5, mood_map["Okay"], social_map["Low"]],
-    [4, 7, mood_map["Okay"], social_map["Low"]],
-    [3, 8, mood_map["Okay"], social_map["Low"]],
-    [6, 8, mood_map["Poor"], social_map["Alone"]],
-    [6, 8, mood_map["Terrible"], social_map["Alone"]],
-    [8, 5, mood_map["Terrible"], social_map["High"]],
-    [6, 8, mood_map["Poor"], social_map["Medium"]],
-    [6.5, 5, mood_map["Good"], social_map["Medium"]],
-    [4.2, 10, mood_map["Terrible"], social_map["Alone"]],
-    [5.0, 6, mood_map["Okay"], social_map["Low"]],
-    [4.9, 7, mood_map["Okay"], social_map["Alone"]],
-    [6.0, 8, mood_map["Poor"], social_map["Low"]],
-    [7.0, 9, mood_map["Good"], social_map["High"]],
-    [5.5, 5.5, mood_map["Okay"], social_map["Medium"]],
-    [4.7, 4.5, mood_map["Terrible"], social_map["Low"]],
-    [6.2, 10.5, mood_map["Okay"], social_map["Alone"]],
-    [4.0, 6, mood_map["Poor"], social_map["Low"]],
-    [8.0, 6.5, mood_map["Excellent"], social_map["High"]],
-    [5.8, 8, mood_map["Okay"], social_map["Alone"]],
-    [5.2, 11, mood_map["Good"], social_map["Alone"]],
-    [6.4, 6, mood_map["Okay"], social_map["Medium"]],
-    [5.0, 6.5, mood_map["Poor"], social_map["Low"]],
-    [4.3, 9.5, mood_map["Poor"], social_map["Alone"]],
-    [5.5, 7.5, mood_map["Good"], social_map["Low"]],
-    [6.9, 4.2, mood_map["Good"], social_map["Medium"]],
-    [4.5, 7.2, mood_map["Terrible"], social_map["Low"]],
-    [7.5, 5.5, mood_map["Excellent"], social_map["Medium"]],
-    [4.8, 6.8, mood_map["Poor"], social_map["Alone"]],
-    [6.6, 8.5, mood_map["Okay"], social_map["Medium"]],
-    [7.0, 6.5, mood_map["Excellent"], social_map["High"]],
-    [5.3, 5.8, mood_map["Okay"], social_map["Low"]],
-    [6.0, 9.5, mood_map["Terrible"], social_map["Alone"]],
-    [4.2, 6.5, mood_map["Terrible"], social_map["Low"]],
-    [5.9, 6.5, mood_map["Good"], social_map["Medium"]],
-    [5.7, 4.8, mood_map["Okay"], social_map["Low"]],
-    [4.6, 10.2, mood_map["Terrible"], social_map["Alone"]],
-])
-y = np.array([
-    0, 2, 1, 0, 2, 1, 2, 2, 2, 1, 2, 2, 2,
-    0, 2, 1, 2, 2, 0, 1, 2, 2, 0, 1, 2, 2, 1, 2,
-    2, 1, 1, 2, 0, 2, 1, 0, 1, 2, 2, 0, 1
-])
-
-X = X[:len(y)]  # Match lengths
-
-# ================================
-# 3️⃣ Split Data
-# ================================
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42
+joblib.dump(
+    (best_model, label_map, mood_map, social_map, list(X.columns)),
+    "model.pkl"
 )
 
-# ================================
-# 4️⃣ Pipeline & Train
-# ================================
-pipeline = Pipeline([
-    ("clf", RandomForestClassifier(
-        n_estimators=150,
-        max_depth=10,
-        random_state=42
-    ))
-])
-
-pipeline.fit(X_train, y_train)
-print("\n🎯 Training Completed Successfully")
-
-# ================================
-# 5️⃣ Predictions & Metrics
-# ================================
-y_pred = pipeline.predict(X_test)
-y_prob = pipeline.predict_proba(X_test)
-
-accuracy = accuracy_score(y_test, y_pred)
-f1 = f1_score(y_test, y_pred, average="weighted")
-auc = roc_auc_score(y_test, y_prob, multi_class="ovo")
-
-print("\n📊 MODEL PERFORMANCE:")
-print(f"✔ Accuracy: {accuracy:.2f}")
-print(f"✔ F1 Score: {f1:.2f}")
-print(f"✔ AUC Score: {auc:.2f}")
-print("\n🔍 Detailed Classification Report:\n", classification_report(y_test, y_pred))
-
-# ================================
-# 6️⃣ Visual Plots
-# ================================
-fpr = dict()
-tpr = dict()
-
-for i in range(len(label_map)):
-    fpr[i], tpr[i], _ = roc_curve((y_test == i).astype(int), y_prob[:, i])
-
-plt.figure(figsize=(7, 5))
-for i in fpr:
-    plt.plot(fpr[i], tpr[i], label=f"Class {label_map[i]}")
-
-plt.plot([0,1], [0,1], "k--")
-plt.xlabel("False Positive Rate")
-plt.ylabel("True Positive Rate")
-plt.title("ROC Curve - Stress Prediction Model")
-plt.legend()
-plt.show()
-
-# ================================
-# 7️⃣ Save the Model
-# ================================
-joblib.dump((pipeline, label_map, mood_map, social_map), "model.pkl")
-print(f"\n model.pkl saved with {len(X)} total training samples")
+print("\nFinal tuned model with evaluation graphs saved successfully")
